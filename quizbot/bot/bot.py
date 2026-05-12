@@ -81,9 +81,6 @@ def setup_bot(app):
         'ENTER_RANDOMNESS_QUIZ': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_randomness_quiz)],
         'ENTER_RESULT_AFTER_QUESTION': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_result_after_question)],
         'ENTER_RESULT_AFTER_QUIZ': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_result_after_quiz)],
-        'ENTER_QUIZ_NAME': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_quiz_name)],
-        'ENTER_PASSWORD_CHOICE': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_password_choice)],
-        'ENTER_PASSWORD': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_password)],
     }
     create_handler = ConversationHandler(
         entry_points=[CommandHandler('create', createQuiz.start)],
