@@ -21,6 +21,7 @@ class Question:
         self.question = question
         self.correct_answer = correct_answer
         self.user_answer = str()
+        self.image_id = None
 
     def check_solution(self):
         """
