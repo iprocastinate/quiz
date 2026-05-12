@@ -126,10 +126,19 @@ async def enter_type(update, context):
     if update.message.text == "Enter":
         return await enter_randomness_quiz(update, context)
 
+    if update.message.photo:
+        # User sent a photo, store it and wait for the poll
+        context.user_data['pending_photo'] = update.message.photo[-1].file_id
+        await update.message.reply_text(
+            "<b>📸 Photo Received!</b>\n\nNow send me the <b>Quiz Poll</b> that goes with this photo.",
+            parse_mode='HTML'
+        )
+        return 'ENTER_TYPE'
+
     if update.message.poll:
         poll = update.message.poll
         if poll.type != 'quiz':
-            await update.message.reply_text("❌ <b>Error:</b> Please send a <b>Quiz</b> poll (with a correct answer set), not a regular poll.", parse_mode='HTML')
+            await update.message.reply_text("❌ <b>Error:</b> Please send a <b>Quiz</b> poll.", parse_mode='HTML')
             return 'ENTER_TYPE'
         
         # Extract question data
@@ -140,6 +149,10 @@ async def enter_type(update, context):
         from quizbot.quiz.question_factory import QuestionChoiceSingle
         q_instance = QuestionChoiceSingle(q_text, correct_answer)
         q_instance.possible_answers = options
+        
+        # Attach photo if we have one pending
+        if 'pending_photo' in context.user_data:
+            q_instance.image_id = context.user_data.pop('pending_photo')
         
         context.user_data['quiz'].add_question(q_instance)
         
