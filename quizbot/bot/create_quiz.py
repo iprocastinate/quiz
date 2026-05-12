@@ -383,14 +383,9 @@ async def enter_result_after_quiz(update, context):
     # Process input
     context.user_data['quiz'].show_results_after_quiz = update.message.text == 'Yes'
 
-    # Skip name prompt and go to password
+    # Skip password and save directly
     context.user_data['quizname'] = context.user_data.get('quiz_name', 'Untitled Quiz')
-    await update.message.reply_text(
-        "<b>🔒 Security Check</b>\n\nDo you want to set a password?",
-        reply_markup=ReplyKeyboardMarkup([['Yes', 'No']], one_time_keyboard=True),
-        parse_mode='HTML'
-    )
-    return 'ENTER_PASSWORD_CHOICE'
+    return await _save_quiz(update, context, password=None)
 
 
 async def enter_quiz_name(update, context):

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, LargeBinary, UniqueConstraint
+from sqlalchemy import Column, Integer, String, LargeBinary, UniqueConstraint, BigInteger
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -23,8 +23,8 @@ class ConversationState(Base):
 
     id = Column(Integer, primary_key=True)
     handler_name = Column(String, nullable=False, index=True)
-    chat_id = Column(Integer, nullable=False)
-    user_id = Column(Integer, nullable=False)
+    chat_id = Column(BigInteger, nullable=False)
+    user_id = Column(BigInteger, nullable=False)
     state = Column(String, nullable=False)
 
     __table_args__ = (
@@ -36,5 +36,5 @@ class UserData(Base):
     __tablename__ = 'user_data'
 
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, nullable=False, unique=True, index=True)
+    user_id = Column(BigInteger, nullable=False, unique=True, index=True)
     data = Column(LargeBinary, nullable=False)

@@ -71,13 +71,6 @@ async def enter_quiz(update, context):
         await update.message.reply_text("🔎 <i>Couldn't find that quiz. Try again?</i>", parse_mode='HTML')
         return 'ENTER_QUIZ'
 
-    if result.password is not None and update.message.from_user.username != quizcreator:
-        context.user_data['pending_quiz'] = pickle.loads(result.quizinstance)
-        context.user_data['pending_password'] = result.password
-        context.user_data['pending_quizname'] = quizname
-        await update.message.reply_text("<b>🔒 Password Protected</b>\nPlease enter the password to unlock this quiz.", parse_mode='HTML')
-        return 'ENTER_PASSWORD'
-
     return await _init_attempt(update, context, pickle.loads(result.quizinstance), quizname)
 
 
@@ -343,14 +336,4 @@ async def start_from_link(update, context, quiz_id):
         return ConversationHandler.END
 
     quiz = pickle.loads(result.quizinstance)
-    
-    # If password protected and not creator
-    if result.password is not None and update.message.from_user.username != result.username:
-        context.user_data['pending_quiz'] = quiz
-        context.user_data['pending_password'] = result.password
-        context.user_data['pending_quizname'] = result.quizname
-        await update.message.reply_text("<b>🔒 Password Protected</b>\nPlease enter the password to unlock this quiz.", parse_mode='HTML')
-        # We need to manually set the state for the conversation
-        return 'ENTER_PASSWORD'
-
     return await _init_attempt(update, context, quiz, result.quizname)

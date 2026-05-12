@@ -153,9 +153,11 @@ def setup_bot(app):
 async def post_init(application):
     """Set bot commands visible in the Telegram command menu."""
     await application.bot.set_my_commands([
+        BotCommand("start", "Start the bot and see welcome message"),
         BotCommand("help", "Show help and available commands"),
-        BotCommand("create", "Create a new quiz"),
-        BotCommand("attempt", "Attempt an existing quiz"),
+        BotCommand("create", "Create a new quiz (Official-style)"),
+        BotCommand("quiz", "Start a group quiz competition"),
+        BotCommand("attempt", "Take a quiz privately"),
         BotCommand("rename", "Rename one of your quizzes"),
         BotCommand("remove", "Delete one of your quizzes"),
     ])
