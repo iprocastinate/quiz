@@ -73,7 +73,7 @@ def setup_bot(app):
         'ENTER_NAME': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_quiz_name)],
         'ENTER_DESCRIPTION': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_description)],
         'ENTER_TIMER': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_timer)],
-        'ENTER_TYPE': [MessageHandler((filters.TEXT | filters.POLL) & ~filters.COMMAND, createQuiz.enter_type)],
+        'ENTER_TYPE': [MessageHandler((filters.TEXT | filters.POLL | filters.PHOTO) & ~filters.COMMAND, createQuiz.enter_type)],
         'ENTER_QUESTION': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_question)],
         'ENTER_ANSWER': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_answer)],
         'ENTER_POSSIBLE_ANSWER': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_possible_answer)],
@@ -91,11 +91,9 @@ def setup_bot(app):
     )
     app.add_handler(create_handler)
 
-    # Conversation if the user wants to attempt a quiz
     attempt_states = {
         'ENTER_QUIZ': [MessageHandler(filters.TEXT & ~filters.COMMAND, attemptQuiz.enter_quiz)],
         'ENTER_ANSWER': [MessageHandler(filters.TEXT & ~filters.COMMAND, attemptQuiz.enter_answer)],
-        'ENTER_PASSWORD': [MessageHandler(filters.TEXT & ~filters.COMMAND, attemptQuiz.enter_password)],
     }
     attempt_handler = ConversationHandler(
         entry_points=[CommandHandler('attempt', attemptQuiz.start)],
@@ -131,13 +129,13 @@ def setup_bot(app):
     from telegram.ext import CallbackQueryHandler
     app.add_handler(CallbackQueryHandler(attemptQuiz.handle_group_callback))
 
-    # fallback for unrecognized messages
+    # fallback for unrecognized messages (ONLY in private chats)
     async def unknown(update, _):
         await update.message.reply_text(
             "I don't understand that. Use /help to see what I can do."
         )
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown))
-    app.add_handler(MessageHandler(filters.COMMAND, unknown))
+    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, unknown))
+    app.add_handler(MessageHandler(filters.COMMAND & filters.ChatType.PRIVATE, unknown))
 
     # log all errors
     app.add_error_handler(error)
