@@ -18,11 +18,17 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 
-async def start(update, _):
+async def start(update, context):
     """Send a message when the command /start is issued."""
+    # Check for deep linking (e.g., /start quiz_123)
+    if context.args:
+        quiz_query = context.args[0]
+        # We redirect to the attempt logic
+        return await attemptQuiz.start_from_link(update, context, quiz_query)
+
     await update.message.reply_text(
         "<b>✨ Welcome to QuizBot! ✨</b>\n\n"
-        "I can help you create interactive quizzes and share them with friends. 🚀\n\n"
+        "I can help you create interactive quizzes exactly like the official one. 🚀\n\n"
         "<b>Quick Commands:</b>\n"
         "➕ /create - Build a new quiz\n"
         "🎯 /attempt - Take an existing quiz\n"
@@ -64,7 +70,10 @@ def setup_bot(app):
 
     # Conversation if the user wants to create a quiz
     create_states = {
-        'ENTER_TYPE': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_type)],
+        'ENTER_NAME': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_quiz_name)],
+        'ENTER_DESCRIPTION': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_description)],
+        'ENTER_TIMER': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_timer)],
+        'ENTER_TYPE': [MessageHandler((filters.TEXT | filters.POLL) & ~filters.COMMAND, createQuiz.enter_type)],
         'ENTER_QUESTION': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_question)],
         'ENTER_ANSWER': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_answer)],
         'ENTER_POSSIBLE_ANSWER': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_possible_answer)],
@@ -116,11 +125,14 @@ def setup_bot(app):
     )
     app.add_handler(edit_handler)
 
-    # start command
+    # Basic commands
     app.add_handler(CommandHandler("start", start))
-
-    # help command
     app.add_handler(CommandHandler("help", print_help))
+    app.add_handler(CommandHandler("quiz", attemptQuiz.start_group_quiz))
+
+    # Button handlers for Group Quiz (Join, Start)
+    from telegram.ext import CallbackQueryHandler
+    app.add_handler(CallbackQueryHandler(attemptQuiz.handle_group_callback))
 
     # fallback for unrecognized messages
     async def unknown(update, _):
@@ -132,6 +144,10 @@ def setup_bot(app):
 
     # log all errors
     app.add_error_handler(error)
+
+    # Handle poll answers (for native quiz experience)
+    from telegram.ext import PollAnswerHandler
+    app.add_handler(PollAnswerHandler(attemptQuiz.receive_quiz_answer))
 
 
 async def post_init(application):

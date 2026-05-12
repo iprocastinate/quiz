@@ -25,6 +25,7 @@ class Quiz:
         self.author = author
         self.show_results_after_quiz = True
         self.show_results_after_question = True
+        self.timer = 30 # Default timer in seconds
 
     def add_question(self, new_question: Question):
         """

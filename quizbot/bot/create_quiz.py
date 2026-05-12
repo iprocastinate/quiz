@@ -29,39 +29,66 @@ dict_question_types = {
 
 
 async def start(update, context):
-    """
-    Starts a conversation about quiz creation.
-    Welcomes the user and asks for the type of the first question.
-    """
-    logger.info('[%s] Creation initialized', update.message.from_user.username)
-
+    """Starts the official-style quiz creation flow."""
     if context.user_data.get('quiz') is not None:
-        # user is in the middle of a quiz and cant attempt to a second one
-        logger.info('[%s] Creation canceled, because the user is in the middle of a creation.',
-                    update.message.from_user.username)
-        await update.message.reply_text(
-            "<b>⚠️ Ongoing Session Detected</b>\n\n"
-            "You're already in the middle of creating a quiz! 🏗️\n"
-            "Finish your current task or cancel it with /cancelCreate before starting a new one.",
-            reply_markup=ReplyKeyboardRemove(),
-            parse_mode='HTML'
-        )
+        await update.message.reply_text("⚠️ Finish your current creation first or /cancelCreate.")
         return ConversationHandler.END
 
-    # Init Quiz for user
-    context.user_data['quiz'] = Quiz(update.message.from_user.username)
-
-    # Asks for type of first question
-    list_question = [[el] for el in list(dict_question_types.keys())]
+    context.user_data['quiz_builder'] = {}
     await update.message.reply_text(
-        "<b>🎨 Let's Build Your Quiz!</b>\n\n"
-        "To get started, what type of question should the <b>first one</b> be?\n\n"
-        "<i>💡 Tip: You can cancel anytime with /cancelCreate</i>",
-        reply_markup=ReplyKeyboardMarkup(
-            list_question, one_time_keyboard=True),
+        "<b>🆕 New Quiz</b>\n\nLet's create a new quiz! First, give it a <b>Name</b>.",
         parse_mode='HTML'
     )
+    return 'ENTER_NAME'
 
+
+async def enter_quiz_name(update, context):
+    """Saves the quiz name and asks for description."""
+    context.user_data['quiz_name'] = update.message.text
+    await update.message.reply_text(
+        "<b>📝 Description</b>\n\nNow, provide a short description for your quiz. ✍️",
+        parse_mode='HTML'
+    )
+    return 'ENTER_DESCRIPTION'
+
+
+async def enter_description(update, context):
+    """Saves description and asks for timer."""
+    context.user_data['quiz_description'] = update.message.text
+    await update.message.reply_text(
+        "<b>⏱️ Time Limit</b>\n\nHow many seconds should users have per question? ⏳",
+        reply_markup=ReplyKeyboardMarkup(
+            [['10', '15', '30'], ['60', '120', '300']], one_time_keyboard=True
+        ),
+        parse_mode='HTML'
+    )
+    return 'ENTER_TIMER'
+
+
+async def enter_timer(update, context):
+    """Initializes the Quiz object with settings and moves to question creation."""
+    try:
+        timer = int(update.message.text)
+    except ValueError:
+        timer = 30
+
+    quiz = Quiz(update.message.from_user.username)
+    quiz.timer = timer
+    # We could store description in the quiz object if we had a field, 
+    # for now we just proceed to questions
+    context.user_data['quiz'] = quiz
+    context.user_data['timer'] = True
+
+    await update.message.reply_text(
+        "<b>✨ Great! Now let's add questions.</b>\n\n"
+        "Send me a <b>Native Quiz Poll</b> to add it to your quiz, or select a type below.\n\n"
+        "<i>When you are finished, press <b>'Enter'</b>.</i>",
+        reply_markup=ReplyKeyboardMarkup(
+            [[el] for el in list(dict_question_types.keys())] + [['Enter']], 
+            one_time_keyboard=True
+        ),
+        parse_mode='HTML'
+    )
     return 'ENTER_TYPE'
 
 
@@ -84,30 +111,57 @@ async def cancel(update, context):
 
 
 async def enter_type(update, context):
-    """
-    After entering the new question type, it asks for the question itself,
-    if the entered string isn't 'Enter'.
-    Otherwise, it asks if the question should be displayed in random order.
-    """
-
+    """Handles timer setting and poll creation."""
+    if 'timer' not in context.user_data:
+        try:
+            context.user_data['quiz'].timer = int(update.message.text)
+            context.user_data['timer'] = True # Mark as set
+        except ValueError:
+            context.user_data['quiz'].timer = 30 # Fallback
     if update.message.text == "Enter":
-        # User dont want to add more questions
-        # Asks for randomness
+        return await enter_randomness_quiz(update, context)
+
+    if update.message.poll:
+        poll = update.message.poll
+        if poll.type != 'quiz':
+            await update.message.reply_text("❌ <b>Error:</b> Please send a <b>Quiz</b> poll (with a correct answer set), not a regular poll.", parse_mode='HTML')
+            return 'ENTER_TYPE'
+        
+        # Extract question data
+        q_text = poll.question
+        options = [o.text for o in poll.options]
+        correct_answer = options[poll.correct_option_id]
+        
+        from quizbot.quiz.question_factory import QuestionChoiceSingle
+        q_instance = QuestionChoiceSingle(q_text, correct_answer)
+        q_instance.possible_answers = options
+        
+        context.user_data['quiz'].add_question(q_instance)
+        
         await update.message.reply_text(
-            "Should the questions be displayed in random order? 🤔",
-            reply_markup=ReplyKeyboardMarkup(
-                [['Yes', 'No']], one_time_keyboard=True)
+            "✅ <b>Question Added!</b>\n\n"
+            "Send me another <b>Quiz Poll</b> to add more, or press <b>'Enter'</b> to finish.",
+            reply_markup=ReplyKeyboardMarkup([['Enter']], one_time_keyboard=True),
+            parse_mode='HTML'
         )
-        logger.info('[%s] Completed question creation',
-                    update.message.from_user.username)
-        return 'ENTER_RANDOMNESS_QUIZ'
+        return 'ENTER_TYPE'
 
-    # TODO What if type doesnt exisit
-    # Save question type
-    context.user_data['questtype'] = dict_question_types[update.message.text]
+    # Fallback to manual selection if they typed instead of sending poll
+    if update.message.text in dict_question_types:
+        context.user_data['questtype'] = dict_question_types[update.message.text]
+        await update.message.reply_text("<b>📝 Question Text</b>\n\nWhat is the question? 🤔", parse_mode='HTML')
+        return 'ENTER_QUESTION'
 
-    await update.message.reply_text("<b>📝 Question Text</b>\n\nWhat is the question? 🤔", parse_mode='HTML')
-    return 'ENTER_QUESTION'
+    await update.message.reply_text(
+        "<b>👋 Ready for questions!</b>\n\n"
+        "Go ahead and <b>Send me a Quiz Poll</b> (with a correct answer) or select a type below:",
+        reply_markup=ReplyKeyboardMarkup(
+            [[el] for el in list(dict_question_types.keys())] + [['Enter']], 
+            one_time_keyboard=True
+        ),
+        parse_mode='HTML'
+    )
+    return 'ENTER_TYPE'
 
 
 async def enter_question(update, context):
@@ -329,15 +383,14 @@ async def enter_result_after_quiz(update, context):
     # Process input
     context.user_data['quiz'].show_results_after_quiz = update.message.text == 'Yes'
 
-    # Ask for name of quiz
+    # Skip name prompt and go to password
+    context.user_data['quizname'] = context.user_data.get('quiz_name', 'Untitled Quiz')
     await update.message.reply_text(
-        "<b>🎉 Almost Done!</b>\n\n"
-        "I've compiled your quiz settings.\n"
-        "How should I name this masterpiece? ✏️",
+        "<b>🔒 Security Check</b>\n\nDo you want to set a password?",
+        reply_markup=ReplyKeyboardMarkup([['Yes', 'No']], one_time_keyboard=True),
         parse_mode='HTML'
     )
-
-    return 'ENTER_QUIZ_NAME'
+    return 'ENTER_PASSWORD_CHOICE'
 
 
 async def enter_quiz_name(update, context):
@@ -441,10 +494,25 @@ async def _save_quiz(update, context, password=None):
         await asyncio.to_thread(session.commit)
     finally:
         session.close()
+
+    # Get the ID of the new quiz
+    session = Session()
+    try:
+        saved_quiz = session.query(QuizModel).filter_by(username=username, quizname=quizname).first()
+        quiz_id = saved_quiz.id
+    finally:
+        session.close()
+
+    bot_username = (await context.bot.get_me()).username
+    share_link = "https://t.me/{}?start={}".format(bot_username, quiz_id)
+
     await update.message.reply_text(
-        "Great! 🥳 I saved your new quiz."
-        "You can attempt to it by the name {}.".format(quizname),
-        reply_markup=ReplyKeyboardRemove()
+        "<b>🎉 Quiz Created Successfully!</b>\n\n"
+        "You can share your quiz using this link:\n"
+        "🔗 {}\n\n"
+        "<i>Anyone who clicks this link will start your quiz immediately!</i>".format(share_link),
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode='HTML'
     )
     logger.info('[%s] Quiz saved as "%s"',
                 update.message.from_user.username, quizname)
