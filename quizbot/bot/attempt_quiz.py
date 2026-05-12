@@ -1,200 +1,379 @@
 """
-Telegram bot to create and attempt to quizzes.
+Module with methods to attempt to a quiz with a telegram bot
 """
-
+import asyncio
 import logging
-from telegram import BotCommand
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ConversationHandler, filters
-import quizbot.bot.create_quiz as createQuiz
-import quizbot.bot.attempt_quiz as attemptQuiz
-import quizbot.bot.edit_quiz as editQuiz
-from quizbot.bot.config import get_config, get_session_factory
-from quizbot.bot.persistence import SQLAlchemyPersistence
+import pickle
+import random
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
+from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ChatAction
+from telegram.ext import ConversationHandler
+from quizbot.quiz.question_factory import QuestionBool, QuestionChoice, \
+    QuestionChoiceSingle, QuestionNumber, QuestionString
+from quizbot.quiz.attempt import Attempt
+from quizbot.bot.models import QuizModel
 
-
-# Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 async def start(update, context):
-    """Send a message when the command /start is issued."""
-    # Check for deep linking (e.g., /start quiz_123)
-    if context.args:
-        quiz_query = context.args[0]
-        # We redirect to the attempt logic
-        return await attemptQuiz.start_from_link(update, context, quiz_query)
+    """
+    Starts a conversation about an attempt at a quiz.
+    """
+    logger.info('[%s] Attempt initialized', update.message.from_user.username)
+
+    if context.user_data.get('attempt') is not None:
+        await update.message.reply_text(
+            "<b>⚠️ Quiz in Progress</b>\n\nYou're already taking a quiz! Finish it or /cancelAttempt first.",
+            parse_mode='HTML'
+        )
+        return ConversationHandler.END
 
     await update.message.reply_text(
-        "<b>✨ Welcome to QuizBot! ✨</b>\n\n"
-        "I can help you create interactive quizzes exactly like the official one. 🚀\n\n"
-        "<b>Quick Commands:</b>\n"
-        "➕ /create - Build a new quiz\n"
-        "🎯 /attempt - Take an existing quiz\n"
-        "✏️ /rename - Change a quiz name\n"
-        "🗑️ /remove - Delete a quiz\n"
-        "❓ /help - Show all features",
+        "<b>🏁 Start a Quiz</b>\n\n"
+        "Enter the <b>name</b> of the quiz you want to take.\n"
+        "<i>(e.g., 'WorldHistory' or 'WorldHistory john_doe')</i>",
+        parse_mode='HTML'
+    )
+    return 'ENTER_QUIZ'
+
+
+async def cancel(update, context):
+    """Cancels the attempt."""
+    context.user_data.clear()
+    await update.message.reply_text("<b>❌ Quiz Cancelled.</b>", parse_mode='HTML', reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+
+async def enter_quiz(update, context):
+    """Finds the quiz and prepares for the first question."""
+    quizname = update.message.text.split()[0]
+    quizcreator = update.message.from_user.username
+    if len(update.message.text.split()) > 1:
+        quizcreator = update.message.text.split()[1]
+
+    await context.bot.send_chat_action(chat_id=update.effective_message.chat_id, action=ChatAction.TYPING)
+
+    Session = context.bot_data['Session']
+    session = Session()
+    try:
+        result = await asyncio.to_thread(
+            session.query(QuizModel).filter_by(username=quizcreator, quizname=quizname).first
+        )
+    finally:
+        session.close()
+
+    if result is None:
+        await update.message.reply_text("🔎 <i>Couldn't find that quiz. Try again?</i>", parse_mode='HTML')
+        return 'ENTER_QUIZ'
+
+    return await _init_attempt(update, context, pickle.loads(result.quizinstance), quizname)
+
+
+async def enter_quiz(update, context):
+    """Finds the quiz and prepares for the first question."""
+    quizname = update.message.text.split()[0]
+    quizcreator = update.message.from_user.username
+    if len(update.message.text.split()) > 1:
+        quizcreator = update.message.text.split()[1]
+
+    await context.bot.send_chat_action(chat_id=update.effective_message.chat_id, action=ChatAction.TYPING)
+
+    Session = context.bot_data['Session']
+    session = Session()
+    try:
+        result = await asyncio.to_thread(
+            session.query(QuizModel).filter_by(username=quizcreator, quizname=quizname).first
+        )
+    finally:
+        session.close()
+
+    if result is None:
+        await update.message.reply_text("🔎 <i>Couldn't find that quiz. Try again?</i>", parse_mode='HTML')
+        return 'ENTER_QUIZ'
+
+    return await _init_attempt(update, context, pickle.loads(result.quizinstance), quizname)
+
+
+async def _init_attempt(update, context, quiz, quizname):
+    """Initializes the attempt object and starts the first poll."""
+    attempt = Attempt(quiz)
+    context.user_data['attempt'] = attempt
+    
+    await update.message.reply_text(
+        "<b>🎯 Quiz: {}</b>\n\n"
+        "Total Questions: <b>{}</b>\n"
+        "Get ready... the first question is coming! 🚀".format(quizname, attempt.total_questions),
+        parse_mode='HTML'
+    )
+    
+    await ask_next_question(update.effective_chat.id, context)
+    return 'ENTER_ANSWER'
+
+
+async def ask_next_question(chat_id, context):
+    """Sends the next question as a native Telegram Quiz Poll."""
+    attempt = context.user_data['attempt']
+    q = attempt.act_question()
+    
+    # We only support Choice questions for native quizzes
+    if not isinstance(q, QuestionChoice):
+        # Fallback for text questions (not supported by native polls)
+        await context.bot.send_message(chat_id, "<b>[Q{}/{}]</b>\n\n{}".format(attempt.current_index(), attempt.total_questions, q.question), parse_mode='HTML')
+        return
+
+    options = q.possible_answers
+    # Find correct index
+    try:
+        correct_index = options.index(q.correct_answer)
+    except ValueError:
+        correct_index = 0 # Fallback
+
+    # Send photo if it exists
+    if hasattr(q, 'image_id') and q.image_id:
+        await context.bot.send_photo(chat_id=chat_id, photo=q.image_id)
+
+    message = await context.bot.send_poll(
+        chat_id=chat_id,
+        question="Question {}/{}: {}".format(attempt.current_index(), attempt.total_questions, q.question),
+        options=options,
+        type='quiz',
+        correct_option_id=correct_index,
+        is_anonymous=False,
+        explanation="The correct answer is: {}".format(q.correct_answer),
+        open_period=attempt.quiz.timer
+    )
+    
+    # Store the poll ID so we know which answer belongs to this attempt
+    context.bot_data[message.poll.id] = chat_id
+
+
+async def start_group_quiz(update, context):
+    """Starts the 'Join' phase for a group quiz competition."""
+    if not context.args:
+        await update.message.reply_text("❌ <b>Usage:</b> /quiz [quiz_name]", parse_mode='HTML')
+        return
+
+    quiz_name = context.args[0]
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
+    # Find the quiz
+    Session = context.bot_data['Session']
+    session = Session()
+    try:
+        result = await asyncio.to_thread(session.query(QuizModel).filter_by(quizname=quiz_name).first)
+    finally:
+        session.close()
+
+    if not result:
+        await update.message.reply_text(f"🔎 <i>Couldn't find quiz '{quiz_name}'</i>", parse_mode='HTML')
+        return
+
+    # Store group session data
+    quiz_data = pickle.loads(result.quizinstance)
+    context.chat_data['group_quiz'] = {
+        'quiz': quiz_data,
+        'quiz_name': quiz_name,
+        'players': {}, # user_id -> {name, score}
+        'state': 'JOINING',
+        'creator_id': update.effective_user.id
+    }
+
+    keyboard = [
+        [InlineKeyboardButton("➕ Join the Quiz!", callback_data="group_join")],
+        [InlineKeyboardButton("🚀 Start Now", callback_data="group_start")]
+    ]
+    
+    await update.message.reply_text(
+        "<b>🎮 Group Quiz: {}</b>\n\n"
+        "Who is ready to compete? Click <b>Join</b> to enter! 🏁\n\n"
+        "<i>Players joined: 0</i>".format(quiz_name),
+        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='HTML'
     )
 
 
-async def print_help(update, _):
-    """Send a message when the command /help is issued."""
-    help_text = (
-        "<b>🛠️ QuizBot Capabilities</b>\n\n"
-        "With QuizBot, you can design professional quizzes with various question types: 🧐\n\n"
-        "• 🔢 <b>Numbers</b> - Exact or decimal values\n"
-        "• 📝 <b>Strings</b> - Text-based answers\n"
-        "• ⚖️ <b>Booleans</b> - True/False questions\n"
-        "• 🔘 <b>Single Choice</b> - Multiple options, one winner\n"
-        "• 🗄️ <b>Multiple Choice</b> - One or more correct answers\n\n"
-        "<b>Available Commands:</b>\n"
-        "🚀 /create - Start the quiz creation wizard\n"
-        "🧠 /attempt - Enter a quiz name to start taking it\n"
-        "✍️ /rename - Give one of your quizzes a new name\n"
-        "🔥 /remove - Permanently delete a quiz you created\n"
-        "🆘 /help - Display this guide\n\n"
-        "<i>Enjoy building and testing knowledge! 🥳</i>"
-    )
-    await update.message.reply_text(help_text, parse_mode='HTML')
+async def handle_group_callback(update, context):
+    """Handles buttons for joining and starting the group quiz."""
+    query = update.callback_query
+    await query.answer()
+    
+    if 'group_quiz' not in context.chat_data:
+        return
+
+    data = context.chat_data['group_quiz']
+    user = update.effective_user
+
+    if query.data == "group_join":
+        if user.id not in data['players']:
+            data['players'][user.id] = {'name': user.first_name, 'score': 0}
+            # Update the message with new player count
+            keyboard = [
+                [InlineKeyboardButton("➕ Join the Quiz!", callback_data="group_join")],
+                [InlineKeyboardButton("🚀 Start Now", callback_data="group_start")]
+            ]
+            await query.edit_message_text(
+                "<b>🎮 Group Quiz: {}</b>\n\n"
+                "Who is ready to compete? Click <b>Join</b> to enter! 🏁\n\n"
+                "<b>Players joined ({}):</b>\n{}".format(
+                    data['quiz_name'], 
+                    len(data['players']),
+                    "\n".join([f"• {p['name']}" for p in data['players'].values()])
+                ),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='HTML'
+            )
+
+    elif query.data == "group_start":
+        if user.id != data['creator_id']:
+            await query.answer("Only the creator can start the quiz! ✋", show_alert=True)
+            return
+        
+        # Require at least 2 players to make it a competition
+        if len(data['players']) < 2:
+            await query.answer("Wait for at least 2 players to join! ⏳", show_alert=True)
+            return
+
+        data['state'] = 'PLAYING'
+        data['attempt'] = Attempt(data['quiz'])
+        await query.edit_message_text("<b>🚀 Quiz Starting NOW!</b>\n<i>Everyone in the group can participate!</i>", parse_mode='HTML')
+        await ask_group_question(update.effective_chat.id, context)
 
 
-async def error(update, context):
-    """Log Errors caused by Updates."""
-    logger.warning('Update "%s" caused error "%s"', update, context.error)
+async def ask_group_question(chat_id, context):
+    """Sends a native quiz poll or message to the group."""
+    data = context.chat_data['group_quiz']
+    attempt = data['attempt']
+    
+    try:
+        q = attempt.act_question()
+    except Exception as e:
+        await context.bot.send_message(chat_id, f"❌ <b>Error:</b> Could not load question. ({str(e)})", parse_mode='HTML')
+        return
 
+    # Determine if we can use a native poll
+    if hasattr(q, 'possible_answers') and q.possible_answers:
+        options = q.possible_answers
+        
+        # Safe lookup for correct index (handles formatting differences)
+        correct_index = 0
+        target = str(q.correct_answer).strip().lower()
+        for i, opt in enumerate(options):
+            if str(opt).strip().lower() == target:
+                correct_index = i
+                break
+        else:
+            # If not found, check if it's a multiple choice string like "A, B"
+            # and pick the first valid one
+            for i, opt in enumerate(options):
+                if str(opt).strip().lower() in target:
+                    correct_index = i
+                    break
+            
+        # Send photo if it exists
+        if hasattr(q, 'image_id') and q.image_id:
+            await context.bot.send_photo(chat_id=chat_id, photo=q.image_id)
 
-def setup_bot(app):
-    """Setups the handlers"""
-
-    # Conversation if the user wants to create a quiz
-    create_states = {
-        'ENTER_NAME': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_quiz_name)],
-        'ENTER_DESCRIPTION': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_description)],
-        'ENTER_TIMER': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_timer)],
-        'ENTER_TYPE': [MessageHandler((filters.TEXT | filters.POLL) & ~filters.COMMAND, createQuiz.enter_type)],
-        'ENTER_QUESTION': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_question)],
-        'ENTER_ANSWER': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_answer)],
-        'ENTER_POSSIBLE_ANSWER': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_possible_answer)],
-        'ENTER_RANDOMNESS_QUESTION': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_randomness_question)],
-        'ENTER_RANDOMNESS_QUIZ': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_randomness_quiz)],
-        'ENTER_RESULT_AFTER_QUESTION': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_result_after_question)],
-        'ENTER_RESULT_AFTER_QUIZ': [MessageHandler(filters.TEXT & ~filters.COMMAND, createQuiz.enter_result_after_quiz)],
-    }
-    create_handler = ConversationHandler(
-        entry_points=[CommandHandler('create', createQuiz.start)],
-        states=create_states,
-        fallbacks=[CommandHandler('cancelCreate', createQuiz.cancel)],
-        name="create_quiz",
-        persistent=True,
-    )
-    app.add_handler(create_handler)
-
-    attempt_states = {
-        'ENTER_QUIZ': [MessageHandler(filters.TEXT & ~filters.COMMAND, attemptQuiz.enter_quiz)],
-        'ENTER_ANSWER': [MessageHandler(filters.TEXT & ~filters.COMMAND, attemptQuiz.enter_answer)],
-    }
-    attempt_handler = ConversationHandler(
-        entry_points=[CommandHandler('attempt', attemptQuiz.start)],
-        states=attempt_states,
-        fallbacks=[CommandHandler('cancelAttempt', attemptQuiz.cancel)],
-        name="attempt_quiz",
-        persistent=True,
-    )
-    app.add_handler(attempt_handler)
-
-    # Conversation about remove or renaming exisiting quiz
-    edit_states = {
-        'ENTER_NAME': [MessageHandler(filters.TEXT & ~filters.COMMAND, editQuiz.enter_name_remove)],
-        'ENTER_OLD_NAME': [MessageHandler(filters.TEXT & ~filters.COMMAND, editQuiz.enter_old_name)],
-        'ENTER_NEW_NAME': [MessageHandler(filters.TEXT & ~filters.COMMAND, editQuiz.enter_new_name)]
-    }
-    edit_handler = ConversationHandler(
-        entry_points=[CommandHandler('rename', editQuiz.start_rename), CommandHandler(
-            'remove', editQuiz.start_remove)],
-        states=edit_states,
-        fallbacks=[CommandHandler('cancelEdit', editQuiz.cancel_edit)],
-        name="edit_quiz",
-        persistent=True,
-    )
-    app.add_handler(edit_handler)
-
-    # Basic commands
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", print_help))
-    app.add_handler(CommandHandler("quiz", attemptQuiz.start_group_quiz))
-
-    # Button handlers for Group Quiz (Join, Start)
-    from telegram.ext import CallbackQueryHandler
-    app.add_handler(CallbackQueryHandler(attemptQuiz.handle_group_callback))
-
-    # fallback for unrecognized messages (ONLY in private chats)
-    async def unknown(update, _):
-        await update.message.reply_text(
-            "I don't understand that. Use /help to see what I can do."
+        message = await context.bot.send_poll(
+            chat_id=chat_id,
+            question="[Q {}/{}] {}".format(attempt.current_index(), attempt.total_questions, q.question),
+            options=options,
+            type='quiz',
+            correct_option_id=correct_index,
+            is_anonymous=False,
+            explanation="The answer is: {}".format(q.correct_answer),
+            open_period=data['quiz'].timer if hasattr(data['quiz'], 'timer') else 30
         )
-    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, unknown))
-    app.add_handler(MessageHandler(filters.COMMAND & filters.ChatType.PRIVATE, unknown))
-
-    # log all errors
-    app.add_error_handler(error)
-
-    # Handle poll answers (for native quiz experience)
-    from telegram.ext import PollAnswerHandler
-    app.add_handler(PollAnswerHandler(attemptQuiz.receive_quiz_answer))
-
-
-async def post_init(application):
-    """Set bot commands visible in the Telegram command menu."""
-    await application.bot.set_my_commands([
-        BotCommand("start", "Start the bot and see welcome message"),
-        BotCommand("help", "Show help and available commands"),
-        BotCommand("create", "Create a new quiz (Official-style)"),
-        BotCommand("quiz", "Start a group quiz competition"),
-        BotCommand("attempt", "Take a quiz privately"),
-        BotCommand("rename", "Rename one of your quizzes"),
-        BotCommand("remove", "Delete one of your quizzes"),
-    ])
-
-
-def start_health_check():
-    """Starts a simple HTTP server to satisfy Render's health check."""
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-    import threading
-
-    class HealthCheckHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
-        def log_message(self, format, *args): return # Silence logs
-
-    port = int(get_config().get('PORT', 8443))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    logger.info(f"Health check server started on port {port}")
-
-
-if __name__ == '__main__':
-    config = get_config()
-    Session = get_session_factory(config['DATABASE_URL'])
-
-    persistence = SQLAlchemyPersistence(database_url=config['DATABASE_URL'])
-    app = ApplicationBuilder().token(config['TELEGRAM_TOKEN']).persistence(persistence).post_init(post_init).build()
-    app.bot_data['Session'] = Session
-
-    setup_bot(app)
-
-    if config['WEBHOOK']:
-        logger.info('Starting bot in WEBHOOK mode')
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=config['PORT'],
-            url_path=config['TELEGRAM_TOKEN'],
-            webhook_url=config['WEBHOOK'] + config['TELEGRAM_TOKEN'],
-        )
+        context.bot_data[message.poll.id] = {'chat_id': chat_id, 'type': 'GROUP'}
     else:
-        logger.info('No WEBHOOK set, starting in polling mode with health check')
-        start_health_check() # Start health check ONLY in polling mode
-        app.run_polling()
+        # Fallback for text-based questions in group
+        await context.bot.send_message(
+            chat_id, 
+            "<b>[Q {}/{}]</b>\n\n{}".format(attempt.current_index(), attempt.total_questions, q.question),
+            parse_mode='HTML'
+        )
+
+
+# Update receive_quiz_answer to handle group scoring
+async def receive_quiz_answer(update, context):
+    poll_answer = update.poll_answer
+    poll_id = poll_answer.poll_id
+    info = context.bot_data.get(poll_id)
+    
+    if not info: return
+
+    if info.get('type') == 'GROUP':
+        chat_id = info['chat_id']
+        chat_data = context.application.chat_data.get(chat_id)
+        if not chat_data or 'group_quiz' not in chat_data: return
+        
+        data = chat_data['group_quiz']
+        user_id = poll_answer.user.id
+        
+        # AUTO-JOIN: If user is not in the list, add them automatically
+        if user_id not in data['players']:
+            data['players'][user_id] = {'name': poll_answer.user.first_name, 'score': 0}
+        
+        # Check if correct
+        attempt = data['attempt']
+        q = attempt.act_question()
+        is_correct = poll_answer.option_ids[0] == q.possible_answers.index(q.correct_answer)
+        
+        if is_correct:
+            data['players'][user_id]['score'] += 1
+
+        # Logic to move to next question (auto-trigger when timer expires or manual trigger)
+        # For now, let's add a manual "Next" trigger or simple auto-logic
+        return
+
+    # --- EXISTING PRIVATE QUIZ LOGIC ---
+    chat_id = info
+    user_id = poll_answer.user.id
+    user_data = await context.application.persistence.get_user_data()
+    data = user_data.get(user_id)
+    if not data or 'attempt' not in data: return
+    attempt = data['attempt']
+    q = attempt.act_question()
+    is_correct = poll_answer.option_ids[0] == q.possible_answers.index(q.correct_answer)
+    attempt.user_points.append((is_correct, q))
+    attempt.questions.pop(0)
+    del context.bot_data[poll_id]
+    if attempt.has_next_question():
+        await ask_next_question(chat_id, context)
+    else:
+        score = sum(1 for p, _ in attempt.user_points if p)
+        await context.bot.send_message(chat_id, f"<b>🎊 Finished!</b> Score: {score}/{attempt.total_questions}", parse_mode='HTML')
+        del data['attempt']
+        await context.application.persistence.update_user_data(user_id, data)
+
+
+async def enter_answer(update, context):
+    """Fallback for non-poll messages during quiz."""
+    await update.message.reply_text("<i>Please answer the poll above! 👆</i>", parse_mode='HTML')
+    return 'ENTER_ANSWER'
+
+
+async def start_from_link(update, context, quiz_id):
+    """Starts a quiz directly from a deep link (ID)."""
+    Session = context.bot_data['Session']
+    session = Session()
+    try:
+        # Search by ID instead of name
+        result = await asyncio.to_thread(
+            session.query(QuizModel).filter_by(id=int(quiz_id)).first
+        )
+    except (ValueError, TypeError):
+        result = None
+    finally:
+        session.close()
+
+    if result is None:
+        await update.message.reply_text("🔎 <i>This quiz link seems to be broken.</i>", parse_mode='HTML')
+        return ConversationHandler.END
+
+    quiz = pickle.loads(result.quizinstance)
+    return await _init_attempt(update, context, quiz, result.quizname)
