@@ -1,6 +1,6 @@
 """use_biginteger
 
-Revision ID: d9e2f1a3b4c5
+Revision ID: biginteger_fix
 Revises: 87f3972b86f9
 Create Date: 2026-05-12 14:48:00.000000
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = 'd9e2f1a3b4c5'
+revision = 'biginteger_fix'
 down_revision = '87f3972b86f9'
 branch_labels = None
 depends_on = None
