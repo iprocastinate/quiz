@@ -182,9 +182,6 @@ def start_health_check():
 
 
 if __name__ == '__main__':
-    # Start health check for Render
-    start_health_check()
-
     config = get_config()
     Session = get_session_factory(config['DATABASE_URL'])
 
@@ -195,6 +192,7 @@ if __name__ == '__main__':
     setup_bot(app)
 
     if config['WEBHOOK']:
+        logger.info('Starting bot in WEBHOOK mode')
         app.run_webhook(
             listen="0.0.0.0",
             port=config['PORT'],
@@ -202,5 +200,6 @@ if __name__ == '__main__':
             webhook_url=config['WEBHOOK'] + config['TELEGRAM_TOKEN'],
         )
     else:
-        logger.info('No WEBHOOK set, starting in polling mode')
+        logger.info('No WEBHOOK set, starting in polling mode with health check')
+        start_health_check() # Start health check ONLY in polling mode
         app.run_polling()
