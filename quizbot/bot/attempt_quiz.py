@@ -231,31 +231,53 @@ async def handle_group_callback(update, context):
 
 
 async def ask_group_question(chat_id, context):
-    """Sends a native quiz poll to the group."""
+    """Sends a native quiz poll or message to the group."""
     data = context.chat_data['group_quiz']
     attempt = data['attempt']
-    q = attempt.act_question()
     
-    if not isinstance(q, QuestionChoice):
-        await context.bot.send_message(chat_id, "❌ Error: Group mode only supports Choice questions.")
+    try:
+        q = attempt.act_question()
+    except Exception as e:
+        await context.bot.send_message(chat_id, f"❌ <b>Error:</b> Could not load question. ({str(e)})", parse_mode='HTML')
         return
 
-    options = q.possible_answers
-    correct_index = options.index(q.correct_answer)
-
-    message = await context.bot.send_poll(
-        chat_id=chat_id,
-        question="[Q {}/{}] {}".format(attempt.current_index(), attempt.total_questions, q.question),
-        options=options,
-        type='quiz',
-        correct_option_id=correct_index,
-        is_anonymous=False,
-        explanation="Correct answer: {}".format(q.correct_answer),
-        open_period=data['quiz'].timer
-    )
-    
-    # Track which group this poll belongs to
-    context.bot_data[message.poll.id] = {'chat_id': chat_id, 'type': 'GROUP'}
+    # Determine if we can use a native poll
+    if hasattr(q, 'possible_answers') and q.possible_answers:
+        options = q.possible_answers
+        
+        # Safe lookup for correct index (handles formatting differences)
+        correct_index = 0
+        target = str(q.correct_answer).strip().lower()
+        for i, opt in enumerate(options):
+            if str(opt).strip().lower() == target:
+                correct_index = i
+                break
+        else:
+            # If not found, check if it's a multiple choice string like "A, B"
+            # and pick the first valid one
+            for i, opt in enumerate(options):
+                if str(opt).strip().lower() in target:
+                    correct_index = i
+                    break
+            
+        message = await context.bot.send_poll(
+            chat_id=chat_id,
+            question="[Q {}/{}] {}".format(attempt.current_index(), attempt.total_questions, q.question),
+            options=options,
+            type='quiz',
+            correct_option_id=correct_index,
+            is_anonymous=False,
+            explanation="The answer is: {}".format(q.correct_answer),
+            open_period=data['quiz'].timer if hasattr(data['quiz'], 'timer') else 30
+        )
+        context.bot_data[message.poll.id] = {'chat_id': chat_id, 'type': 'GROUP'}
+    else:
+        # Fallback for text-based questions in group
+        await context.bot.send_message(
+            chat_id, 
+            "<b>[Q {}/{}]</b>\n\n{}".format(attempt.current_index(), attempt.total_questions, q.question),
+            parse_mode='HTML'
+        )
 
 
 # Update receive_quiz_answer to handle group scoring
