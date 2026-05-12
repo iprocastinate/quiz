@@ -112,11 +112,16 @@ async def cancel(update, context):
 
 async def enter_type(update, context):
     """Handles timer setting and poll creation."""
+    if 'quiz' not in context.user_data:
+        # Emergency restart if session data is lost
+        await update.message.reply_text("<b>⚠️ Session Lost</b>\nYour creation session timed out or was lost. Please use /create to start again.", parse_mode='HTML')
+        return ConversationHandler.END
+
     if 'timer' not in context.user_data:
         try:
             context.user_data['quiz'].timer = int(update.message.text)
             context.user_data['timer'] = True # Mark as set
-        except ValueError:
+        except (ValueError, AttributeError):
             context.user_data['quiz'].timer = 30 # Fallback
     if update.message.text == "Enter":
         return await enter_randomness_quiz(update, context)
@@ -474,7 +479,10 @@ async def _save_quiz(update, context, password=None):
     Saves the quiz to the database with an optional password hash.
     """
     username = update.message.from_user.username
-    quizname = context.user_data['quizname']
+    if 'quiz' not in context.user_data:
+        await update.message.reply_text("❌ <b>Error:</b> Quiz data lost. Please start over with /create.", parse_mode='HTML')
+        return ConversationHandler.END
+    quizname = context.user_data.get('quizname', 'Untitled Quiz')
 
     Session = context.bot_data['Session']
     session = Session()
