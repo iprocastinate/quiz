@@ -163,7 +163,28 @@ async def post_init(application):
     ])
 
 
+def start_health_check():
+    """Starts a simple HTTP server to satisfy Render's health check."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
+
+    class HealthCheckHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+        def log_message(self, format, *args): return # Silence logs
+
+    port = int(get_config().get('PORT', 8443))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    logger.info(f"Health check server started on port {port}")
+
+
 if __name__ == '__main__':
+    # Start health check for Render
+    start_health_check()
+
     config = get_config()
     Session = get_session_factory(config['DATABASE_URL'])
 
