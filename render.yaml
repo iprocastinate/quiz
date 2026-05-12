@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: quizbot
+    runtime: docker
+    region: frankfurt
+    plan: free
+    branch: master
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: WEBHOOK
+        sync: false
+      - key: DATABASE_URL
+        sync: false
